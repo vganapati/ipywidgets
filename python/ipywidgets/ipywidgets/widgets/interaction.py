@@ -3,22 +3,31 @@
 
 """Interact with functions using widgets."""
 
-from collections.abc import Iterable, Mapping
-from inspect import signature, Parameter
+from __future__ import print_function
+from __future__ import division
+
+try:  # Python >= 3.3
+    from inspect import signature, Parameter
+except ImportError:
+    from IPython.utils.signatures import signature, Parameter
 from inspect import getcallargs
-from inspect import getfullargspec as check_argspec
+
+try:
+    from inspect import getfullargspec as check_argspec
+except ImportError:
+    from inspect import getargspec as check_argspec # py2
 import sys
 
-from IPython import get_ipython
-from . import (Widget, ValueWidget, Text,
+from IPython.core.getipython import get_ipython
+from . import (ValueWidget, Text,
     FloatSlider, IntSlider, Checkbox, Dropdown,
     VBox, Button, DOMWidget, Output)
 from IPython.display import display, clear_output
+from ipython_genutils.py3compat import string_types, unicode_type
 from traitlets import HasTraits, Any, Unicode, observe
 from numbers import Real, Integral
 from warnings import warn
-
-
+from collections import Iterable, Mapping
 
 empty = Parameter.empty
 
@@ -44,8 +53,7 @@ def show_inline_matplotlib_plots():
     except ImportError:
         return
 
-    if (mpl.get_backend() == 'module://ipykernel.pylab.backend_inline' or
-        mpl.get_backend() == 'module://matplotlib_inline.backend_inline'):
+    if mpl.get_backend() == 'module://ipykernel.pylab.backend_inline':
         flush_figures()
 
 
@@ -85,7 +93,7 @@ def _get_min_max_value(min, max, value=None, step=None):
     # Either min and max need to be given, or value needs to be given
     if value is None:
         if min is None or max is None:
-            raise ValueError('unable to infer range, value from: ({}, {}, {})'.format(min, max, value))
+            raise ValueError('unable to infer range, value from: ({0}, {1}, {2})'.format(min, max, value))
         diff = max - min
         value = min + (diff / 2)
         # Ensure that value has the same type as diff
@@ -111,18 +119,21 @@ def _get_min_max_value(min, max, value=None, step=None):
         tick = int((value - min) / step)
         value = min + tick * step
     if not min <= value <= max:
-        raise ValueError('value must be between min and max (min={}, value={}, max={})'.format(min, value, max))
+        raise ValueError('value must be between min and max (min={0}, value={1}, max={2})'.format(min, value, max))
     return min, max, value
 
 def _yield_abbreviations_for_parameter(param, kwargs):
     """Get an abbreviation for a function parameter."""
     name = param.name
     kind = param.kind
+    ann = param.annotation
     default = param.default
     not_found = (name, empty, empty)
     if kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY):
         if name in kwargs:
             value = kwargs.pop(name)
+        elif ann is not empty:
+            value = ann
         elif default is not empty:
             value = default
         else:
@@ -146,9 +157,8 @@ class interactive(VBox):
         The function to which the interactive widgets are tied. The `**kwargs`
         should match the function signature.
     __options : dict
-        A dict of options. Currently, the only supported keys are
-        ``"manual"`` (defaults to ``False``), ``"manual_name"`` (defaults
-        to ``"Run Interact"``) and ``"auto_display"`` (defaults to ``False``).
+        A dict of options. Currently, the only supported key is
+        ``"manual"``.
     **kwargs : various, optional
         An interactive widget is created for each keyword argument that is a
         valid widget abbreviation.
@@ -166,7 +176,6 @@ class interactive(VBox):
         self.f = f = __interact_f
         self.clear_output = kwargs.pop('clear_output', True)
         self.manual = __options.get("manual", False)
-        self.manual_name = __options.get("manual_name", "Run Interact")
         self.auto_display = __options.get("auto_display", False)
 
         new_kwargs = self.find_abbreviations(kwargs)
@@ -190,7 +199,7 @@ class interactive(VBox):
 
         # If we are only to run the function on demand, add a button to request this.
         if self.manual:
-            self.manual_button = Button(description=self.manual_name)
+            self.manual_button = Button(description="Run Interact")
             c.append(self.manual_button)
 
         self.out = Output()
@@ -212,7 +221,8 @@ class interactive(VBox):
         else:
             for widget in self.kwargs_widgets:
                 widget.observe(self.update, names='value')
-            self.update()
+
+            self.on_displayed(self.update)
 
     # Callback function
     def update(self, *args):
@@ -243,7 +253,7 @@ class interactive(VBox):
         except Exception as e:
             ip = get_ipython()
             if ip is None:
-                self.log.warning("Exception in interact callback: %s", e, exc_info=True)
+                self.log.warn("Exception in interact callback: %s", e, exc_info=True)
             else:
                 ip.showtraceback()
         finally:
@@ -277,12 +287,13 @@ class interactive(VBox):
         """Given a sequence of (name, abbrev, default) tuples, return a sequence of Widgets."""
         result = []
         for name, abbrev, default in seq:
-            if isinstance(abbrev, Widget) and (not isinstance(abbrev, ValueWidget)):
-                raise TypeError("{!r} is not a ValueWidget".format(abbrev))
             widget = self.widget_from_abbrev(abbrev, default)
-            if widget is None:
-                raise ValueError("{!r} cannot be transformed to a widget".format(abbrev))
-            if not hasattr(widget, "description") or not widget.description:
+            if not (isinstance(widget, ValueWidget) or isinstance(widget, fixed)):
+                if widget is None:
+                    raise ValueError("{!r} cannot be transformed to a widget".format(abbrev))
+                else:
+                    raise TypeError("{!r} is not a ValueWidget".format(widget))
+            if not widget.description:
                 widget.description = name
             widget._kwarg = name
             result.append(widget)
@@ -327,8 +338,8 @@ class interactive(VBox):
     @staticmethod
     def widget_from_single_value(o):
         """Make widgets from single values, which can be used as parameter defaults."""
-        if isinstance(o, str):
-            return Text(value=str(o))
+        if isinstance(o, string_types):
+            return Text(value=unicode_type(o))
         elif isinstance(o, bool):
             return Checkbox(value=o)
         elif isinstance(o, Integral):
@@ -377,11 +388,11 @@ class interactive(VBox):
     # Return a factory for interactive functions
     @classmethod
     def factory(cls):
-        options = dict(manual=False, auto_display=True, manual_name="Run Interact")
+        options = dict(manual=False, auto_display=True)
         return _InteractFactory(cls, options)
 
 
-class _InteractFactory:
+class _InteractFactory(object):
     """
     Factory for instances of :class:`interactive`.
 
@@ -455,7 +466,7 @@ class _InteractFactory:
             # 1. Using interact as a function
             def greeting(text="World"):
                 print("Hello {}".format(text))
-            interact(greeting, text="Jupyter Widgets")
+            interact(greeting, text="IPython Widgets")
 
             # 2. Using interact as a decorator
             @interact
@@ -463,7 +474,7 @@ class _InteractFactory:
                 print("Hello {}".format(text))
 
             # 3. Using interact as a decorator with named parameters
-            @interact(text="Jupyter Widgets")
+            @interact(text="IPython Widgets")
             def greeting(text="World"):
                 print("Hello {}".format(text))
 
@@ -541,7 +552,7 @@ class _InteractFactory:
 
 
 interact = interactive.factory()
-interact_manual = interact.options(manual=True, manual_name="Run Interact")
+interact_manual = interact.options(manual=True)
 
 
 class fixed(HasTraits):
@@ -549,7 +560,7 @@ class fixed(HasTraits):
     value = Any(help="Any Python object")
     description = Unicode('', help="Any Python object")
     def __init__(self, value, **kwargs):
-        super().__init__(value=value, **kwargs)
+        super(fixed, self).__init__(value=value, **kwargs)
     def get_interact_value(self):
         """Return the value for this widget which should be passed to
         interactive functions. Custom widgets can change this method

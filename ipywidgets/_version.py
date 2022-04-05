@@ -1,3 +1,6 @@
-version_info = (5, 2, 3)
+# Copyright (c) Jupyter Development Team.
+# Distributed under the terms of the Modified BSD License.
+
+version_info = (6, 0, 1)
 __version__ = '.'.join(map(str, version_info))
-__frontend_version__ = '~1.2.0'
+__frontend_version__ = '~2.1.4'
